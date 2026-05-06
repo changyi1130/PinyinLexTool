@@ -52,7 +52,7 @@ def open_phrases_txt():
 
 
 def show_about():
-    messagebox.showinfo("关于", "拼音短语管理工具\n版本：0.0.1\n\n管理微软拼音自定义短语")
+    messagebox.showinfo("关于", "拼音短语管理工具\n版本：0.1.2\n\n管理微软拼音自定义短语")
 
 
 class PhraseToolGUI:

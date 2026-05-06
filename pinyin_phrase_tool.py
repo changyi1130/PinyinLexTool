@@ -188,9 +188,11 @@ def read_existing_phrases() -> List[Tuple[bool, bytes, bytes, bytes]]:
                 if len(phrase_block_bytes) < 18:
                     continue
 
+                # 用 re.DOTALL 使 . 匹配所有字节（包括 \x0a），
+                # 否则含 \x0a 字节的 UTF-16LE 字符（如全角星号 ＊）会导致匹配失败
                 match = re.match(
                     (b'(.+)' + PHRASE_SEPARATOR_BYTES) * 2,
-                    phrase_block_bytes[16:])
+                    phrase_block_bytes[16:], re.DOTALL)
                 if match is None:
                     continue
                 pinyin_bytes, phrase_bytes = match.groups()
@@ -230,7 +232,8 @@ def import_phrases(file_path: str, force: bool = False, dry_run: bool = False) -
         'imported': 0,
         'skipped': 0,
         'overwritten': 0,
-        'errors': 0
+        'errors': 0,
+        'ignored_comments': 0
     }
 
     if not os.path.exists(file_path):
@@ -251,10 +254,19 @@ def import_phrases(file_path: str, force: bool = False, dry_run: bool = False) -
     with open(file_path, 'r', encoding='utf-8') as f:
         lines = f.readlines()
 
-    stats['total_lines'] = len(lines)
-
-    # 处理每一行
+    # 过滤掉注释行和空行，只统计有效数据行
+    data_lines = []
     for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith('#'):
+            continue
+        data_lines.append(line)
+
+    stats['total_lines'] = len(data_lines)
+    stats['ignored_comments'] = len(lines) - len(data_lines)
+
+    # 处理每一行（仅有效数据行）
+    for line in data_lines:
         parsed = parse_line(line)
         if not parsed:
             stats['skipped'] += 1
@@ -289,9 +301,10 @@ def import_phrases(file_path: str, force: bool = False, dry_run: bool = False) -
 
     if dry_run:
         print("\n=== 干运行模式 - 不会实际修改文件 ===")
-        print(f"总行数: {stats['total_lines']}")
+        print(f"数据行数: {stats['total_lines']}")
         print(f"成功导入: {stats['imported']}")
-        print(f"跳过: {stats['skipped']}")
+        print(f"跳过(已存在): {stats['skipped']}")
+        print(f"跳过(注释/空行): {stats['ignored_comments']}")
         print(f"覆盖: {stats['overwritten']}")
         print(f"错误: {stats['errors']}")
         print(f"最终短语总数: {len(phrase_list)}")
@@ -304,9 +317,10 @@ def import_phrases(file_path: str, force: bool = False, dry_run: bool = False) -
     write_phrases(phrase_list)
 
     print("\n导入完成:")
-    print(f"总行数: {stats['total_lines']}")
+    print(f"数据行数: {stats['total_lines']}")
     print(f"成功导入: {stats['imported']}")
-    print(f"跳过: {stats['skipped']}")
+    print(f"跳过(已存在): {stats['skipped']}")
+    print(f"跳过(注释/空行): {stats['ignored_comments']}")
     print(f"覆盖: {stats['overwritten']}")
     print(f"错误: {stats['errors']}")
     print(f"最终短语总数: {len(phrase_list)}")
