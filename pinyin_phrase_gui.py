@@ -1,7 +1,7 @@
 import os
 import sys
 import tkinter as tk
-from tkinter import filedialog, messagebox, scrolledtext
+from tkinter import messagebox, scrolledtext
 import subprocess
 import threading
 
@@ -19,10 +19,13 @@ def get_phrases_text():
         return "没有自定义短语"
     lines = [f"共 {len(phrase_list)} 条自定义短语：\n"]
     for _, pinyin_bytes, header, phrase_bytes in phrase_list:
-        index = int.from_bytes(header[6:10], byteorder='little')
-        pinyin = pinyin_bytes.decode('utf-16le').rstrip('\x00')
-        phrase = phrase_bytes.decode('utf-16le').rstrip('\x00')
-        lines.append(f"{pinyin:15} {index:8} {phrase}")
+        try:
+            index = int.from_bytes(header[6:10], byteorder='little')
+            pinyin = pinyin_bytes.decode('utf-16le').rstrip('\x00')
+            phrase = phrase_bytes.decode('utf-16le').rstrip('\x00')
+            lines.append(f"{pinyin:6} {index:8} {phrase}")
+        except Exception:
+            continue
     return '\n'.join(lines)
 
 
@@ -56,7 +59,7 @@ class PhraseToolGUI:
     def __init__(self, root):
         self.root = root
         root.title("拼音短语工具")
-        root.geometry("500x400")
+        root.geometry("550x400")
         root.resizable(False, False)
 
         # 标题
@@ -98,11 +101,18 @@ class PhraseToolGUI:
         self.result_text.insert(tk.END, text)
 
     def import_action(self):
-        file_path = filedialog.askopenfilename(
-            title="选择要导入的短语文件",
-            filetypes=[("文本文件", "*.txt"), ("所有文件", "*.*")]
-        )
-        if not file_path:
+        # 获取 exe 所在目录（或程序所在目录）
+        if getattr(sys, 'frozen', False):
+            # 打包后的 exe 路径
+            exe_dir = os.path.dirname(sys.executable)
+        else:
+            # 开发环境下的程序目录
+            exe_dir = os.path.dirname(os.path.abspath(__file__))
+        
+        file_path = os.path.join(exe_dir, "phrases.txt")
+        
+        if not os.path.exists(file_path):
+            messagebox.showerror("错误", f"找不到文件：{file_path}")
             return
         try:
             # 在新线程中执行，避免阻塞 GUI
@@ -123,13 +133,16 @@ class PhraseToolGUI:
         messagebox.showinfo("导入完成", f"导入完成！\n成功：{result['imported']}\n跳过：{result['skipped']}")
 
     def export_action(self):
-        file_path = filedialog.asksaveasfilename(
-            title="导出短语到文件",
-            defaultextension=".txt",
-            filetypes=[("文本文件", "*.txt"), ("所有文件", "*.*")]
-        )
-        if not file_path:
-            return
+        # 获取 exe 所在目录（或程序所在目录）
+        if getattr(sys, 'frozen', False):
+            # 打包后的 exe 路径
+            exe_dir = os.path.dirname(sys.executable)
+        else:
+            # 开发环境下的程序目录
+            exe_dir = os.path.dirname(os.path.abspath(__file__))
+        
+        file_path = os.path.join(exe_dir, "backup.txt")
+        
         try:
             success = export_phrases(file_path)
             if success:

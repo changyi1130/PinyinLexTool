@@ -70,9 +70,12 @@ def padded_bytes(s):
 
 
 def get_phrase_header(header_pinyin_len, index):
-    """生成短语头部"""
+    """
+    生成短语头部（固定 16 字节）
+    结构: magic(4) + pinyin_len(2) + index(4) + flags(4) + suffix(2)
+    """
     return (b'\x10\x00\x10\x00' + int2bytes(header_pinyin_len, 2)
-            + int2bytes(index) + b'\x06\x00\x00\x00\x00' + b'\x00\x00'
+            + int2bytes(index, 4) + b'\x06\x00\x00\x00'
             + phrase_fixed_last_bytes)
 
 
@@ -151,7 +154,8 @@ def parse_line(line: str) -> Optional[Tuple[str, int, str]]:
 
 
 def read_existing_phrases() -> List[Tuple[bool, bytes, bytes, bytes]]:
-    """读取现有短语，返回列表[(is_new, pinyin_bytes, header, phrase_bytes)]"""
+    """读取现有短语，返回列表[(is_new, pinyin_bytes, header, phrase_bytes)]
+    参考 srf.py 的简洁实现，跳过无法解析的短语。"""
     if not os.path.exists(LEX_FILE):
         return []
 
@@ -161,17 +165,16 @@ def read_existing_phrases() -> List[Tuple[bool, bytes, bytes, bytes]]:
 
     try:
         phrase_cnt = bytes2int(read_bytes(PHRASE_CNT_POS, 4))
-
-        # 添加空词库检查
         if phrase_cnt == 0:
             return []
 
         phrase_block_first_pos = PHRASE_LEN_FIRST_POS + 4 * (phrase_cnt - 1)
+        file_size = os.path.getsize(LEX_FILE)
 
-        # 读取现有短语
         for i in range(phrase_cnt):
             if i == phrase_cnt - 1:
-                phrase_block_pos = phrase_block_len = -1
+                phrase_block_pos = file_size
+                phrase_block_len = phrase_block_pos - last_phrase_pos
             else:
                 phrase_block_pos = bytes2int(
                     read_bytes(PHRASE_LEN_FIRST_POS + i * 4, 4))
@@ -182,19 +185,24 @@ def read_existing_phrases() -> List[Tuple[bool, bytes, bytes, bytes]]:
             last_phrase_pos = phrase_block_pos
 
             try:
-                pinyin_bytes, phrase_bytes = re.match(
-                    (b'(.+)' + PHRASE_SEPARATOR_BYTES) * 2, phrase_block_bytes[16:]).groups()
+                if len(phrase_block_bytes) < 18:
+                    continue
+
+                match = re.match(
+                    (b'(.+)' + PHRASE_SEPARATOR_BYTES) * 2,
+                    phrase_block_bytes[16:])
+                if match is None:
+                    continue
+                pinyin_bytes, phrase_bytes = match.groups()
                 phrase_fixed_last_bytes = phrase_block_bytes[14:16]
 
-                # 防止已删除的短语
                 if phrase_block_bytes[9:10] == b'\x00':
                     phrase_list.append((False, pinyin_bytes,
                                         phrase_block_bytes[:16], phrase_bytes))
-            except Exception as e:
-                print(f"警告: 读取第 {i + 1} 个短语失败: {e}")
+            except Exception:
                 continue
-    except Exception as e:
-        print(f"警告: 读取现有短语失败: {e}")
+    except Exception:
+        pass
 
     return phrase_list
 
@@ -232,11 +240,11 @@ def import_phrases(file_path: str, force: bool = False, dry_run: bool = False) -
     # 读取现有短语
     phrase_list = read_existing_phrases()
 
-    # 构建现有短语的字典，便于查找
+    # 构建现有短语的字典，便于查找 - 基于拼音+短语组合（忽略索引）
     existing_phrases = {}
     for _, pinyin_bytes, header, phrase_bytes in phrase_list:
         index = bytes2int(header[6:10])
-        key = (pinyin_bytes, index)
+        key = (pinyin_bytes, phrase_bytes)  # 使用拼音+短语作为唯一标识
         existing_phrases[key] = (False, pinyin_bytes, header, phrase_bytes)
 
     # 读取并解析导入文件
@@ -262,21 +270,13 @@ def import_phrases(file_path: str, force: bool = False, dry_run: bool = False) -
             index = max_index + 1000000
             print(f"自动分配位置: {pinyin} -> {index}")
 
-        # 检查是否已存在
-        key = (pinyin_bytes, index)
+        # 检查是否已存在 - 基于拼音+短语组合（忽略索引）
+        key = (pinyin_bytes, phrase_bytes)
         if key in existing_phrases:
-            if not force:
-                response = input(f"短语 '{pinyin} {index} {phrase}' 已存在，是否覆盖? (y/n): ")
-                if response.lower() != 'y':
-                    print(f"跳过: '{pinyin} {index} {phrase}'")
-                    stats['skipped'] += 1
-                    continue
-
-            # 删除旧短语
-            del existing_phrases[key]
-            # 从phrase_list中移除
-            phrase_list = [x for x in phrase_list if not (x[1] == pinyin_bytes and bytes2int(x[2][6:10]) == index)]
-            stats['overwritten'] += 1
+            # 相同的拼音和短语已存在，直接跳过，不询问
+            print(f"跳过重复: '{pinyin} {phrase}'（已存在）")
+            stats['skipped'] += 1
+            continue
 
         # 添加新短语
         header = get_phrase_header(16 + len(pinyin_bytes) + PHRASE_SEPARATOR_SIZE, index)
@@ -327,14 +327,20 @@ def export_phrases(file_path: str) -> bool:
         return False
 
     try:
+        exported_count = 0
         with open(file_path, 'w', encoding='utf-8') as f:
             for _, pinyin_bytes, header, phrase_bytes in phrase_list:
-                index = bytes2int(header[6:10])
-                pinyin = pinyin_bytes.decode(PADDED_ENCODING).rstrip('\x00')
-                phrase = phrase_bytes.decode(PADDED_ENCODING).rstrip('\x00')
-                f.write(f"{pinyin} {index} {phrase}\n")
+                try:
+                    index = bytes2int(header[6:10])
+                    pinyin = pinyin_bytes.decode(PADDED_ENCODING).rstrip('\x00')
+                    phrase = phrase_bytes.decode(PADDED_ENCODING).rstrip('\x00')
+                    f.write(f"{pinyin} {index} {phrase}\n")
+                    exported_count += 1
+                except Exception as e:
+                    print(f"警告: 跳过无法导出的短语: {e}")
+                    continue
 
-        print(f"成功导出 {len(phrase_list)} 条短语到: {file_path}")
+        print(f"成功导出 {exported_count} 条短语到: {file_path}")
         return True
     except Exception as e:
         print(f"导出失败: {e}")
@@ -357,31 +363,38 @@ def write_phrases(phrase_list: List[Tuple[bool, bytes, bytes, bytes]]):
             f.write(b'\x38\xd2\xa3\x65')
             f.write(b'\x00' * 32)
 
+    # 计算所有短语的数据长度
+    phrase_data_list = []
+    for _, pinyin_bytes, header, phrase_bytes in phrase_list:
+        data_bytes = PHRASE_SEPARATOR_BYTES.join([pinyin_bytes, phrase_bytes, b''])
+        phrase_data_list.append((header, data_bytes))
+
     # 写入短语
     tolast_phrase_pos = 0
-    total_size = PHRASE_LEN_FIRST_POS
+    # 初始总大小 = 文件头部分 + 位置偏移数组
+    phrase_cnt = len(phrase_data_list)
+    total_size = PHRASE_LEN_FIRST_POS + 4 * (phrase_cnt - 1)
 
     with open(LEX_FILE, 'rb+') as file:
         file.seek(PHRASE_LEN_FIRST_POS)
         file.truncate()
 
         # 写入短语位置偏移
-        for _, *items in phrase_list[:-1]:
-            phrase_len = sum(map(len, items)) + PHRASE_SEPARATOR_SIZE * 2
+        for i in range(phrase_cnt - 1):
+            header, data_bytes = phrase_data_list[i]
+            phrase_len = len(header) + len(data_bytes)
             tolast_phrase_pos += phrase_len
             file.write(int2bytes(tolast_phrase_pos, length=4))
-            total_size += PHRASE_SEPARATOR_SIZE * 2
 
         # 写入短语数据
-        for _, pinyin_bytes, header, phrase_bytes in phrase_list:
+        for header, data_bytes in phrase_data_list:
             file.write(header)
-            data_bytes = PHRASE_SEPARATOR_BYTES.join([pinyin_bytes, phrase_bytes, b''])
             file.write(data_bytes)
             total_size += len(header) + len(data_bytes)
 
     # 更新文件头
-    replace_bytes(PHRASE_64PCNT_POS, int2bytes(64 + len(phrase_list) * 4, length=4))
-    replace_bytes(PHRASE_CNT_POS, int2bytes(len(phrase_list), length=4))
+    replace_bytes(PHRASE_64PCNT_POS, int2bytes(64 + phrase_cnt * 4, length=4))
+    replace_bytes(PHRASE_CNT_POS, int2bytes(phrase_cnt, length=4))
     replace_bytes(TOTAL_BYTES_POS, int2bytes(total_size, length=4))
 
 
