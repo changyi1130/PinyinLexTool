@@ -1,2 +1,7 @@
 /backup.txt
 /phrases.txt
+/.venv/
+/pinyin_phrase_gui.spec
+/dist/
+/build/
+/.idea/
